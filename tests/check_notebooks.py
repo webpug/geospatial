@@ -36,7 +36,7 @@ import matplotlib.pyplot as plt
 root = Path(__file__).resolve().parents[1]
 transformer = InteractiveShell.instance().input_transformer_manager
 notebooks = {}
-for path in root.glob('*.ipynb'):
+for path in root.rglob('*.ipynb'):
     n = nbformat.read(path, as_version=4)
     nbformat.validate(n)
     for index, cell in enumerate(n.cells):

@@ -83,7 +83,14 @@ running the comparison sends coordinates and place names to Google Earth Engine.
 Other notebooks:
 
 - [Portal lab — open in Colab](https://colab.research.google.com/github/webpug/geospatial/blob/main/portal_lab.ipynb)
-- [Original standout lab — open in Colab](https://colab.research.google.com/github/webpug/geospatial/blob/main/standout_systems_labelling_lab.ipynb)
+- [Original standout lab — open in Colab](https://colab.research.google.com/github/webpug/geospatial/blob/main/external_inspirations/standout_systems_labelling_lab.ipynb)
+
+External inspiration: **Teodora Szasz, PhD** authored the Standout Systems notebook
+**“You Are Hand-Labelling Data Google Already Described for Free”**, preserved in
+[external_inspirations/](external_inspirations/standout_systems_labelling_lab.ipynb).
+Our Alpha Earth demo is adapted from her work, with added interactive controls,
+Seattle defaults, and Google Maps search. Read her work on
+[Substack](https://teodoracoach.substack.com/) and [teodora.coach](https://teodora.coach/).
 
 Use the same Drive-copy and sharing checks before entering personal data in any lab.
 

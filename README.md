@@ -49,7 +49,10 @@ anyone who should not have access. A launch link cannot enforce private permissi
 **Never save personal data back to GitHub**, including source, outputs, or widget
 state. Do not use **Save a copy in GitHub** for your personal copy.
 
-Run the setup cells in order. In Step 3, run the places editor and enter a name,
+Run the setup cells in order. Enter your own Earth Engine project ID in the blank
+`PROJECT_ID` field; empty or whitespace-only values are rejected before authentication.
+The initial PEEK point, Step 4 query, and first public place example use downtown
+Seattle (47.6062, -122.3321). In Step 3, run the places editor and enter a name,
 latitude, and longitude, then click **Add / update**. Reusing a name updates that
 place. Select a place to edit it or use **Remove selected**; **Reset defaults**
 restores the eight public examples. Run **which places are twins?** after editing
@@ -59,7 +62,6 @@ your edits; the comparison does not reset the list.
 In Step 4, run the query editor, enter latitude and longitude, and click **Apply
 query**. Then run the map and histogram cells. Rerunning the editor or map preserves
 the applied point; editing a field alone does not apply it or call Earth Engine.
-The initial query uses the public Chicago Loop coordinates.
 
 The optional Google Maps search cell accepts a city, address, business, or natural
 language description. Enable billing and **Places API (New)** in your Google Cloud
@@ -87,5 +89,5 @@ Use the same Drive-copy and sharing checks before entering personal data in any 
 
 Offline checks: with `ipywidgets`, `nbformat`, `ipython`, `numpy`, `matplotlib`, and
 `requests` installed, run `python tests/check_notebooks.py`. The checks compile all
-notebook cells and exercise the editors and mocked Places responses without live
-Places or Earth Engine requests.
+notebook cells and check project validation, startup defaults, editors, and mocked
+Places responses without live Places or Earth Engine requests.

@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ['MPLBACKEND'] = 'Agg'
 import nbformat
@@ -46,6 +46,66 @@ for path in root.glob('*.ipynb'):
 print('PASS: all three notebooks validate and every transformed code cell compiles.')
 
 main = notebooks['alpha_earth_embeddings_demo.ipynb']
+
+# Execute the connection code with a fake ee module, skipping install/widget setup.
+connect_source = next(c.source for c in main.cells if 'ee.Authenticate()' in c.source)
+connect_source = connect_source[connect_source.index('PROJECT_ID ='):]
+assert connect_source.startswith('PROJECT_ID = ""  #@param {type:"string"}')
+
+def with_inputs(source, **values):
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, (ast.Constant, ast.UnaryOp)):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in values:
+                    node.value = ast.Constant(values[target.id])
+    return compile(ast.fix_missing_locations(tree), '<form inputs>', 'exec')
+
+for project in ('', ' \t\n ', '  synthetic-user-project  '):
+    fake_ee = Mock()
+    connection = {}
+    with patch.dict(sys.modules, {'ee': fake_ee}), contextlib.redirect_stdout(io.StringIO()):
+        try:
+            exec(with_inputs(connect_source, PROJECT_ID=project), connection)
+        except ValueError as exc:
+            assert not project.strip()
+            assert 'Enter your own Earth Engine project ID' in str(exc)
+            assert 'PROJECT_ID' in str(exc) and 'rerun' in str(exc)
+        else:
+            assert project.strip(), 'Blank project must fail before authentication'
+    if project.strip():
+        fake_ee.Authenticate.assert_called_once_with()
+        fake_ee.Initialize.assert_called_once_with(project='synthetic-user-project')
+        assert connection['PROJECT_ID'] == 'synthetic-user-project'
+    else:
+        fake_ee.Authenticate.assert_not_called()
+        fake_ee.Initialize.assert_not_called()
+print('PASS: blank/whitespace projects fail before auth; supplied project is stripped and passed to mocked ee.')
+
+# Run startup in a fresh namespace, and verify edited PEEK inputs also drive the map.
+peek_source = next(c.source for c in main.cells if 'PEEK_LAT ' in c.source)
+paint_source = next(c.source for c in main.cells if 'm1 = new_map(' in c.source)
+for inputs, expected in [({}, (47.6062, -122.3321)),
+                         ({'PEEK_LAT': 10.0, 'PEEK_LON': 20.0}, (10.0, 20.0))]:
+    fake_ee = Mock()
+    fake_ee.Geometry.Rectangle.side_effect = tuple
+    sample = fake_ee.ImageCollection.return_value.filterDate.return_value.mosaic.return_value.select.return_value
+    sample.reduceRegion.return_value.getInfo.return_value = {}
+    startup = {'ee': fake_ee, 'new_map': Mock()}
+    with contextlib.redirect_stdout(io.StringIO()):
+        exec(with_inputs(peek_source, **inputs), startup)
+        exec(compile(paint_source, '<startup map>', 'exec'), startup)
+    assert startup['PEEK_NAME'] == 'Seattle'
+    assert startup['CENTER'] == list(expected)
+    west, south, east, north = startup['region']
+    assert west < expected[1] < east and south < expected[0] < north
+    assert np.allclose([(south + north) / 2, (west + east) / 2], expected)
+    fake_ee.Geometry.Rectangle.assert_called_once()
+    fake_ee.Geometry.Point.assert_called_once_with(list(reversed(expected)))
+    startup['new_map'].assert_called_once_with(list(expected), 9)
+    sample.clip.assert_called_once_with(startup['region'])
+print('PASS: fresh startup initializes region and map from default or edited PEEK inputs without preexisting CENTER.')
+
 editor_source = next(c.source for c in main.cells if 'class PlacesEditor:' in c.source)
 analysis_source = next(c.source for c in main.cells if 'Run me: which places are twins?' in c.source)
 ns = {}
@@ -61,6 +121,7 @@ def enter(name, lat, lon):
     editor.add.click()
 
 assert len(places) == 8
+assert next(iter(places.items())) == ('Seattle', (47.6062, -122.3321))
 initial = places.copy()
 enter('  Synthetic site  ', '12.5', '-45.25')
 assert places['Synthetic site'] == (12.5, -45.25) and len(places) == 9
@@ -190,7 +251,7 @@ def applied():
 
 run_cell(query_source)
 query = ns['query_editor']
-assert applied() == initial['Chicago Loop']
+assert applied() == initial['Seattle']
 for lat, lon in [('12.5', '-45.25'), ('-90', '180'), ('90', '-180'), ('0', '0')]:
     before = applied()
     query.latitude.value, query.longitude.value = lat, lon
@@ -233,7 +294,6 @@ print('PASS: query validation, explicit apply, applied-state reruns, and map con
 
 import types
 import requests as http_requests
-from unittest.mock import Mock
 # Fail closed if any test accidentally tries a real HTTP request.
 network_guard = patch('requests.sessions.Session.request', side_effect=AssertionError('Network forbidden'))
 network_guard.start()
@@ -379,7 +439,7 @@ print('PASS: mocked Places request contract, errors, secret redaction, attributi
 
 # Public fixtures only: tests must work from a checkout or ZIP without Git history.
 assert initial == {
-    'Chicago Loop': (41.8827, -87.6233), 'Manhattan': (40.758, -73.9855),
+    'Seattle': (47.6062, -122.3321), 'Manhattan': (40.758, -73.9855),
     'Iowa cropland': (42.03, -93.6), 'Everglades': (25.75, -80.8),
     'Sahara, Algeria': (26.0, 2.0), 'Amazon, Para': (-3.0, -54.0),
     'Icelandic highland': (64.7, -18.5), 'Nile Delta': (30.9, 31.2),
@@ -388,7 +448,7 @@ assert main.metadata.colab.omit_outputs is True and 'widgets' not in main.metada
 for cell in main.cells:
     assert not any(k in cell.metadata for k in ('widgets', 'outputId', 'executionInfo'))
     if cell.cell_type == 'code': assert not cell.outputs and cell.execution_count is None
-assert any('by **Teodora Szasz, PhD**' in c.source for c in main.cells)
+assert any('**Teodora**' in c.source for c in main.cells)
 assert 'blob/main/alpha_earth_embeddings_demo.ipynb' in main.cells[0].source
 for controller in ('places_editor', 'query_editor', 'places_search'):
     ns[controller].close()

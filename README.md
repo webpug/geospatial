@@ -65,9 +65,20 @@ the applied point; editing a field alone does not apply it or call Earth Engine.
 
 The optional Google Maps search cell accepts a city, address, business, or natural
 language description. Enable billing and **Places API (New)** in your Google Cloud
-project, restrict the key to that API, and add `GOOGLE_MAPS_API_KEY` through Colab's
-**Secrets (key icon)** with **notebook access** enabled. Only **Search** reads the
-secret and sends the query to Google; requests may incur charges. Select a result
+project and restrict the key to that API. **Preferred:** add `GOOGLE_MAPS_API_KEY`
+through Colab's **Secrets (key icon)** in the left sidebar with **notebook access**
+enabled. Alternatively, run **Optional: set a runtime Google Maps API key**
+immediately before the search cell and paste the key into its masked prompt.
+Keep the key out of notebook code. Search prefers the runtime key, then Secrets.
+Rerun key setup and submit a **blank** prompt to clear the runtime key and use
+Secrets again. Cancellation also clears it. If hidden input is unavailable, setup
+stops before any visible-input fallback; use Secrets instead.
+
+The runtime key stays in Python memory until reset through that cell, runtime
+restart, or disconnecting **and deleting** the runtime; closing the browser alone
+does not clear it. Setup does not print the key or store it in a widget, file, or
+notebook source. Only **Search** reads Secrets (when no runtime key is set) and
+sends the key and query to Google; requests may incur charges. Select a result
 and click **Add selected to PLACES** or **Use for Step4**, then run the relevant
 analysis cells. Manual entry works without a key. Search state stays in the kernel;
 the controls do not write files or Drive data.

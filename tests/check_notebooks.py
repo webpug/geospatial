@@ -1,10 +1,13 @@
 import ast
 import contextlib
+import getpass
 import io
 import json
 import os
 from pathlib import Path
 import sys
+import warnings
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 os.environ['MPLBACKEND'] = 'Agg'
@@ -46,6 +49,58 @@ for path in root.rglob('*.ipynb'):
 print('PASS: all three notebooks validate and every transformed code cell compiles.')
 
 main = notebooks['alpha_earth_embeddings_demo.ipynb']
+
+# Exercise the real helper and complete consumer cells without EE or tile requests.
+helper_source = next(c.source for c in main.cells if 'def new_map(' in c.source)
+helper_node = next(node for node in ast.parse(helper_source).body
+                   if isinstance(node, ast.FunctionDef) and node.name == 'new_map')
+helper_code = compile(ast.Module(body=[helper_node], type_ignores=[]), '<map helper>', 'exec')
+fake_xyzservices = ModuleType('xyzservices')
+fake_providers = ModuleType('xyzservices.providers')
+provider = object()
+fake_providers.CartoDB = SimpleNamespace(DarkMatter=provider)
+fake_xyzservices.providers = fake_providers
+for fallback in (False, True):
+    for name, zoom, layer_count in [('m1', 9, 1), ('m3', 10, 2), ('m4', 10, 1)]:
+        source = next(c.source for c in main.cells if f'{name} = new_map(' in c.source)
+        fake_geemap, fake_folium = Mock(), Mock()
+        fake_geemap.foliumap = fake_folium
+        if fallback:
+            fake_geemap.Map.side_effect = RuntimeError('Widgets unavailable')
+        constructor = fake_folium.Map if fallback else fake_geemap.Map
+        map_instance = Mock(spec=['addLayer', 'add_basemap'])
+        constructor.return_value = map_instance
+        fake_emb = Mock()
+        fake_emb.reduceRegion.return_value.getInfo.return_value = {'A00': 0.2}
+        similarity = fake_emb.multiply.return_value.reduce.return_value.rename.return_value
+        similarity.reduceRegion.return_value.getInfo.return_value = {'sim_p50': 0.1, 'sim_p99': 0.9}
+        map_ns = dict(CENTER=[10, 20], QUERY_LAT=10, QUERY_LON=20,
+                      region=Mock(), square_region=Mock(), ee=Mock(), emb=fake_emb,
+                      BANDS=['A00'], embedding=Mock())
+        with patch.dict(sys.modules, {'geemap': fake_geemap, 'geemap.foliumap': fake_folium,
+                                      'xyzservices': fake_xyzservices,
+                                      'xyzservices.providers': fake_providers}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            exec(helper_code, map_ns)
+            exec(compile(source, f'<{name} consumer>', 'exec'), map_ns)
+            expected = dict(center=[10, 20], zoom=zoom, height='560px')
+            fake_geemap.Map.assert_called_once_with(**expected, basemap=provider)
+            assert fake_geemap.Map.call_args.kwargs['basemap'] is provider
+            if fallback:
+                fake_folium.Map.assert_called_once_with(**expected, tiles=provider, basemap=None)
+                assert fake_folium.Map.call_args.kwargs['tiles'] is provider
+            else:
+                fake_folium.Map.assert_not_called()
+            assert map_ns[name] is map_instance
+            map_instance.add_basemap.assert_not_called()
+            assert map_instance.addLayer.call_count == layer_count
+            # Preserve the helper's optional height on both backend paths.
+            assert map_ns['new_map']([-30, 40], 7, height='420px') is map_instance
+            basemap_kwargs = dict(tiles=provider, basemap=None) if fallback else dict(basemap=provider)
+            constructor.assert_called_with(center=[-30, 40], zoom=7, height='420px',
+                                           **basemap_kwargs)
+            map_instance.add_basemap.assert_not_called()
+print('PASS: m1/m3/m4 initialize DarkMatter through both map backends without extra basemaps; overlays and height preserved.')
 
 # Execute the connection code with a fake ee module, skipping install/widget setup.
 connect_source = next(c.source for c in main.cells if 'ee.Authenticate()' in c.source)
@@ -240,6 +295,11 @@ print('PASS: comparison uses current edits; 0/1-place guards precede requests; e
 # Query controls: edits do not apply, errors preserve state, reruns retain applied state.
 query_source = next(c.source for c in main.cells if 'class QueryEditor:' in c.source)
 search_source = next(c.source for c in main.cells if 'class PlacesSearch:' in c.source)
+key_setup_source = next(c.source for c in main.cells if 'def set_runtime_maps_key():' in c.source)
+search_index = next(i for i, c in enumerate(main.cells) if c.source == search_source)
+assert main.cells[search_index - 1].source == key_setup_source
+assert main.cells[search_index - 2].cell_type == 'markdown'
+assert 'Where to add `GOOGLE_MAPS_API_KEY`' in main.cells[search_index - 2].source
 map_source = next(c.source for c in main.cells if 'Run me: pick a spot' in c.source)
 
 def run_cell(source):
@@ -298,6 +358,7 @@ import requests as http_requests
 network_guard = patch('requests.sessions.Session.request', side_effect=AssertionError('Network forbidden'))
 network_guard.start()
 secret = 'synthetic-secret-never-display'
+runtime_secret = 'synthetic-runtime-secret-never-display'
 secret_get = Mock(return_value=secret)
 colab = types.ModuleType('google.colab')
 colab.userdata = types.SimpleNamespace(get=secret_get)
@@ -328,17 +389,23 @@ def response(status=200, payload=success, json_error=None):
 
 def assert_clean():
     contents = search.status.value + search.results.value + repr(search.selection.options)
-    assert secret not in contents
+    for key in (secret, runtime_secret):
+        assert key not in contents
+        assert key not in repr(search.view.get_state())
+        assert all(key not in repr(widget.get_state()) for widget in
+                   (search.query, search.search, search.selection, search.add, search.use,
+                    search.status, search.results))
     assert not search.search.disabled and not search.query.disabled
 
-def click_search(result=None, error=None):
+def click_search(result=None, error=None, expected_key=secret):
     def post(url, **kwargs):
         assert search.search.disabled and search.query.disabled
         assert not search.candidates and not search.results.value
         assert search.selection.value is None and search.add.disabled and search.use.disabled
-        assert url == 'https://places.googleapis.com/v1/places:searchText' and secret not in url
+        assert url == 'https://places.googleapis.com/v1/places:searchText' and expected_key not in url
         assert kwargs['json'] == {'textQuery': search.query.value.strip(), 'pageSize': 5}
-        assert kwargs['headers'] == {'X-Goog-Api-Key': secret,
+        assert expected_key not in repr(kwargs['json'])
+        assert kwargs['headers'] == {'X-Goog-Api-Key': expected_key,
             'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location,places.attributions'}
         assert kwargs['timeout'] == (5, 20) and kwargs['allow_redirects'] is False
         if error: raise error
@@ -346,7 +413,7 @@ def click_search(result=None, error=None):
     before_places, before_query = places.copy(), applied()
     with patch('requests.post', side_effect=post) as mocked, contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
         search.search.click()
-    assert secret not in out.getvalue() + err.getvalue()
+    assert all(key not in out.getvalue() + err.getvalue() for key in (secret, runtime_secret))
     assert places == before_places and applied() == before_query
     assert_clean()
     return mocked
@@ -410,6 +477,7 @@ for returned, error in [(None, None), ('', None), ('  ', None), (None, RuntimeEr
     secret_get.return_value, secret_get.side_effect = returned, error
     mocked = click_search(response())
     assert not mocked.called and 'Secrets' in search.status.value and not search.candidates
+    assert 'setup cell immediately above search' in search.status.value
     secret_get.return_value, secret_get.side_effect = secret, None
 # Redact and escape even malicious successful text payloads.
 malicious = {'places': [{'displayName': {'text': secret}, 'formattedAddress': secret,
@@ -433,6 +501,88 @@ assert not search.candidates and search.selection.value is None
 assert not ns['query_editor'].apply.disabled  # Manual path still available.
 ns['query_editor'].set_applied(10, 20)
 assert applied() == (10, 20)
+
+# The optional masked prompt never uses a plain input or a persisted widget value.
+def run_key_setup(value=None, error=None, prompt_impl=None):
+    before_calls = secret_get.call_count
+    before_filters = warnings.filters[:]
+    def hidden_prompt(prompt):
+        assert ns['_maps_runtime_api_key'] is None  # Previous key cleared before input.
+        assert 'GOOGLE_MAPS_API_KEY' in prompt and 'blank' in prompt
+        assert secret not in prompt and runtime_secret not in prompt
+        if prompt_impl:
+            return prompt_impl(prompt)
+        if error is not None:
+            raise error
+        return value
+    with patch('getpass.getpass', side_effect=hidden_prompt) as masked, \
+            patch('builtins.input', side_effect=AssertionError('Plain input forbidden')) as plain, \
+            patch('requests.post', side_effect=AssertionError('Setup must not send requests')) as post, \
+            patch('IPython.display.display') as display, \
+            contextlib.redirect_stdout(io.StringIO()) as out, \
+            contextlib.redirect_stderr(io.StringIO()) as err:
+        exec(compile(key_setup_source, '<key setup>', 'exec'), ns)
+    masked.assert_called_once()
+    plain.assert_not_called()
+    post.assert_not_called()
+    display.assert_not_called()
+    assert secret_get.call_count == before_calls
+    assert warnings.filters == before_filters
+    output = out.getvalue() + err.getvalue()
+    assert all(key not in output for key in (secret, runtime_secret))
+    assert 'Traceback' not in output
+    assert_clean()
+    return output
+
+assert 'Runtime key set' in run_key_setup('  ' + runtime_secret + '  ')
+assert ns['_maps_runtime_api_key'] == runtime_secret
+# Rerunning search preserves the runtime key and does not read Secrets.
+before_calls = secret_get.call_count
+run_cell(search_source)
+search = ns['places_search']
+search.query.value = 'Synthetic public museum'
+click_search(response(), expected_key=runtime_secret).assert_called_once()
+assert secret_get.call_count == before_calls
+runtime_payload = {'places': [{'displayName': {'text': runtime_secret},
+                              'formattedAddress': runtime_secret,
+                              'location': {'latitude': 1, 'longitude': 2},
+                              'attributions': [{'provider': runtime_secret, 'providerUri': runtime_secret}]}]}
+click_search(response(payload=runtime_payload), expected_key=runtime_secret)
+assert '[redacted]' in search.results.value
+click_search(error=RuntimeError(runtime_secret), expected_key=runtime_secret)
+assert 'could not' in search.status.value
+assert secret_get.call_count == before_calls
+
+for blank in ('', ' \t '):
+    run_key_setup(runtime_secret)
+    assert 'Runtime key cleared' in run_key_setup(blank)
+    assert ns['_maps_runtime_api_key'] is None
+    before_calls = secret_get.call_count
+    click_search(response()).assert_called_once()
+    assert secret_get.call_count == before_calls + 1
+    secret_get.assert_called_with('GOOGLE_MAPS_API_KEY')
+
+for failure, status in [(KeyboardInterrupt(runtime_secret), 'cancelled'),
+                        (EOFError(runtime_secret), 'cancelled'),
+                        (getpass.GetPassWarning(runtime_secret), 'Hidden input is unavailable'),
+                        (RuntimeError(runtime_secret), 'could not complete')]:
+    run_key_setup(runtime_secret)
+    assert status in run_key_setup(error=failure)
+    assert ns['_maps_runtime_api_key'] is None
+    click_search(response()).assert_called_once()
+
+# Exercise getpass's real unsafe fallback: warning must abort before raw input/echo,
+# even if a surrounding environment has configured warnings to be ignored.
+run_key_setup(runtime_secret)
+with warnings.catch_warnings():
+    warnings.simplefilter('ignore', getpass.GetPassWarning)
+    with patch('getpass._raw_input') as raw_input:
+        output = run_key_setup(prompt_impl=getpass.fallback_getpass)
+    raw_input.assert_not_called()
+assert 'Hidden input is unavailable' in output and 'may be echoed' not in output
+assert ns['_maps_runtime_api_key'] is None
+click_search(response()).assert_called_once()
+print('PASS: masked runtime key setup, header transmission, precedence, blank reset, safe cancellation/fallback, and no secret output.')
 modules_guard.stop()
 network_guard.stop()
 print('PASS: mocked Places request contract, errors, secret redaction, attribution escaping, explicit transfers, and reruns.')

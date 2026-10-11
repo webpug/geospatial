@@ -194,4 +194,3 @@ class PlacesSearch:
         self.query.unobserve(self._edited, names="value")
         for widget in (self.add, self.use, *self.view.children, self.view):
             widget.close()
-

@@ -28,5 +28,3 @@ def set_runtime_maps_key():
             print("Runtime key set. Run the Maps search cell, then click Search.")
         else:
             print("Runtime key cleared. Search will use Colab Secrets with notebook access.")
-
-
